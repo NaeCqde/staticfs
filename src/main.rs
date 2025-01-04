@@ -27,6 +27,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    log::error!("staticfs HOST PORT");
+    log::error!("staticfs HOST PORT\nThis program serves the files in the current directory as an HTTP server.");
     Ok(())
 }
