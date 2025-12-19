@@ -63,7 +63,6 @@ jobs:
                   executable-name: staticfs
                   target: ${{ matrix.platform.target }}
                   extra-files: |-
-                      example.env
                       README.md
                   _force-release-for-testing: true
                   action-gh-release-parameters: |
@@ -83,7 +82,6 @@ jobs:
                   executable-name: staticfs
                   target: ${{ matrix.platform.target }}
                   extra-files: |-
-                      example.env
                       README.md
                   _force-release-for-testing: true
                   action-gh-release-parameters: |
