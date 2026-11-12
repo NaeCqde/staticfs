@@ -64,7 +64,7 @@ jobs:
               with:
                   ref: ${{ github.event.pull_request.head.ref }}
                   fetch-depth: 0
-                  token: ${{ (github.event.pull_request.user.login == github.repository_owner && secrets.WEEKLY_SECURITY_TOKEN) || github.token }}
+                  token: ${{ (github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner && secrets.WEEKLY_SECURITY_TOKEN) || github.token }}
             - name: Decision file
               run: echo "DECISION=$RUNNER_TEMP/decision.json" >> "$GITHUB_ENV"
             - name: Was the last commit made by this job?
@@ -74,10 +74,10 @@ jobs:
             - uses: anthropics/claude-code-action@9008224dd4f743876f528e6ba0f0d611f076a7f9 # v1.0.271
               if: steps.last.outputs.mine != 'true'
               env:
-                  GH_TOKEN: ${{ (github.event.pull_request.user.login == github.repository_owner && secrets.WEEKLY_SECURITY_TOKEN) || github.token }}
+                  GH_TOKEN: ${{ (github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner && secrets.WEEKLY_SECURITY_TOKEN) || github.token }}
               with:
                   claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-                  github_token: ${{ (github.event.pull_request.user.login == github.repository_owner && secrets.WEEKLY_SECURITY_TOKEN) || github.token }}
+                  github_token: ${{ (github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner && secrets.WEEKLY_SECURITY_TOKEN) || github.token }}
                   prompt: |
                       REPO: ${{ github.repository }}
                       PR NUMBER: ${{ github.event.pull_request.number }}
@@ -110,10 +110,10 @@ jobs:
             - uses: anthropics/claude-code-action@9008224dd4f743876f528e6ba0f0d611f076a7f9 # v1.0.271
               if: steps.last.outputs.mine == 'true'
               env:
-                  GH_TOKEN: ${{ (github.event.pull_request.user.login == github.repository_owner && secrets.WEEKLY_SECURITY_TOKEN) || github.token }}
+                  GH_TOKEN: ${{ (github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner && secrets.WEEKLY_SECURITY_TOKEN) || github.token }}
               with:
                   claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-                  github_token: ${{ (github.event.pull_request.user.login == github.repository_owner && secrets.WEEKLY_SECURITY_TOKEN) || github.token }}
+                  github_token: ${{ (github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner && secrets.WEEKLY_SECURITY_TOKEN) || github.token }}
                   prompt: |
                       REPO: ${{ github.repository }}
                       PR NUMBER: ${{ github.event.pull_request.number }}
@@ -136,12 +136,13 @@ jobs:
                   PR: ${{ github.event.pull_request.number }}
                   AUTHOR: ${{ github.event.pull_request.user.login }}
                   OWNER: ${{ github.repository_owner }}
+                  ACTOR: ${{ github.actor }}
                   BASE: ${{ github.base_ref }}
               run: |
                   say() { echo "$1"; gh pr comment "$PR" --body "$1" || true; }
                   # Only the pull requests of the owner's account are merged here: anybody else with write access could otherwise get
                   # a merge with the owner's token past the branch protection (the diff is untrusted, and so is Claude's reading of it).
-                  [ "$AUTHOR" = "$OWNER" ] || { echo "the author is not the owner: not merging"; exit 0; }
+                  [ "$AUTHOR" = "$OWNER" ] && [ "$ACTOR" = "$OWNER" ] || { echo "the author or the pusher is not the owner: not merging"; exit 0; }
                   # A pull request that looks unfinished is never merged automatically (draft, WIP / do-not-merge in the title, labels,
                   # commit messages, an unchecked task list in the description).
                   unfinished() {
@@ -241,6 +242,7 @@ jobs:
                   BASE: ${{ github.base_ref }}
                   GH_TOKEN: ${{ secrets.WEEKLY_SECURITY_TOKEN }}
                   PR: ${{ github.event.pull_request.number }}
+                  REPO: ${{ github.repository }}
                   SHA: ${{ github.event.pull_request.head.sha }}
               run: |
                   say() { echo "$1"; gh pr comment "$PR" --body "$1" || true; }
@@ -281,8 +283,9 @@ jobs:
                   [ "$(gh pr view "$PR" --json headRefOid --jq .headRefOid)" = "$SHA" ] || { echo "the pull request changed after the judgement"; exit 0; }
                   why=$(unfinished) && { say "Not merged automatically: $why."; exit 0; }
                   # fixed rules
-                  files=$(gh pr diff "$PR" --name-only)
-                  if echo "$files" | grep -Eqi '(^|/)(\.github/|Cargo\.(toml|lock)$|package(-lock)?\.json$|(pnpm-lock\.yaml|yarn\.lock|bun\.lockb?)$|go\.(mod|sum)$|build\.rs$|post_build\.rs$|build\.[cm]?[jt]s$|patches/|bunfig\.toml$|\.npmrc$|tsconfig\.json$|Dockerfile|compose\.ya?ml$|wrangler\.|LICENSE|docs/SPEC\.md$|[^/]*\.(sh|bat|ps1|cmd)$|[^/]*\.(exe|dll|so|dylib|wasm|zip|jar)$)'; then
+                  # the old names of renamed files count too (a rename could move a workflow out of sight)
+                  files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)') || { echo "the file list could not be read"; exit 0; }
+                  if echo "$files" | grep -Eqi '(^|/)(\.github/|\.cargo/|rust-toolchain|Makefile|justfile|Cargo\.(toml|lock)$|package(-lock)?\.json$|(pnpm-lock\.yaml|yarn\.lock|bun\.lockb?)$|go\.(mod|sum)$|build\.rs$|post_build\.rs$|build\.[cm]?[jt]s$|patches/|bunfig\.toml$|\.npmrc$|tsconfig\.json$|Dockerfile|compose\.ya?ml$|wrangler\.|LICENSE|docs/SPEC\.md$|[^/]*\.(sh|bat|ps1|cmd)$|[^/]*\.(exe|dll|so|dylib|wasm|zip|jar)$)'; then
                     say "Not merged automatically: the change touches files that only the owner may merge (workflows, dependencies, build or install scripts, binaries, the license or the specification)."; exit 0
                   fi
                   read -r add del n < <(gh pr view "$PR" --json additions,deletions,changedFiles --jq '"\(.additions) \(.deletions) \(.changedFiles)"')
