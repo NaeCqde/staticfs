@@ -1,90 +1,191 @@
-name: release
+name: ci
 
-permissions:
-    contents: write
-
+# Every push and pull request builds the program for every platform and
+# archives them. The `latest` release is updated by a push to main (its tag moves to the pushed commit; usually with the files that the pull request run built, see `reuse`); a version
+# tag (`git tag v0.1.0 && git push --tags`), or a run started by hand with a tag name, makes the release of that tag. A pull
+# request does not publish anything. Changes to documentation, the license and editor settings alone do not start it.
 on:
     push:
-        paths-ignore: ["**.md", "LICENSE*", "docs/**", ".gitignore", ".gitattributes", ".prettierrc*", ".editorconfig", ".vscode/**", ".github/dependabot.yml", ".github/workflows/security.yml", "**/.DS_Store"]
+        branches: ["**"]
+        tags:
+            - "v*"
+        paths-ignore:
+            - "**.md"
+            - "LICENSE*"
+            - "docs/**"
+            - ".gitignore"
+            - ".gitattributes"
+            - ".prettierrc*"
+            - ".editorconfig"
+            - ".vscode/**"
+            - ".github/dependabot.yml"
+            - ".github/workflows/security.yml"
+            - "**/.DS_Store"
     pull_request:
-        paths-ignore: ["**.md", "LICENSE*", "docs/**", ".gitignore", ".gitattributes", ".prettierrc*", ".editorconfig", ".vscode/**", ".github/dependabot.yml", ".github/workflows/security.yml", "**/.DS_Store"]
+        paths-ignore:
+            - "**.md"
+            - "LICENSE*"
+            - "docs/**"
+            - ".gitignore"
+            - ".gitattributes"
+            - ".prettierrc*"
+            - ".editorconfig"
+            - ".vscode/**"
+            - ".github/dependabot.yml"
+            - ".github/workflows/security.yml"
+            - "**/.DS_Store"
+    workflow_dispatch:
+        inputs:
+            tag:
+                description: "Tag of the release to create (made from the selected branch if it does not exist)"
+                required: true
+
+permissions:
+    contents: read
+
+concurrency:
+    group: ci-${{ github.ref }}
+    cancel-in-progress: true
 
 env:
-    CRATE_NAME: staticfs
-    GITHUB_TOKEN: ${{ github.token }}
     RUST_BACKTRACE: 1
 
 jobs:
-    release:
-        name: Release - ${{ matrix.platform.os-name }}
+    # A push to main is, as a rule, the merge of a pull request that has already been built. When the tree of the merged commit is
+    # the very tree that the pull request run built (every platform recorded it in TREE-<platform>), that run's files are used and
+    # nothing is built again; any other case (main moved on, a direct push, a build missing or expired) builds as usual.
+    reuse:
+        name: Reuse the pull request build
+        runs-on: ubuntu-24.04
+        permissions:
+            contents: read
+            actions: read
+            pull-requests: read
+        outputs:
+            reuse: ${{ steps.find.outputs.reuse }}
+        steps:
+            - uses: actions/checkout@v4
+              if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+              with:
+                  persist-credentials: false
+            - name: Find the build of the pull request
+              id: find
+              if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  head=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[0].head.sha // empty')
+                  [ -n "$head" ] || { echo "no pull request: build"; exit 0; }
+                  run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --event pull_request --commit "$head" --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+                  [ -n "$run" ] || { echo "no successful run of the pull request: build"; exit 0; }
+                  # only a run of a branch of this repository: the files of a fork's run are built by code that nobody here has trusted
+                  [ "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" --jq '.head_repository.full_name')" = "$GITHUB_REPOSITORY" ] || { echo "the pull request run is from a fork: build"; exit 0; }
+                  mkdir dl reuse
+                  gh run download "$run" --repo "$GITHUB_REPOSITORY" --pattern 'staticfs-*' --dir dl || { echo "download failed: build"; exit 0; }
+                  mine=$(git rev-parse 'HEAD^{tree}')
+                  n=0
+                  for f in dl/*/TREE-*; do
+                    [ -f "$f" ] && [ "$(cat "$f")" = "$mine" ] || { echo "the tree differs from the pull request build: build"; exit 0; }
+                    n=$((n + 1))
+                  done
+                  # one per platform of the matrix below
+                  [ "$n" -eq 6 ] || { echo "$n platforms only: build"; exit 0; }
+                  mv dl/staticfs-*/* reuse/
+                  echo "reuse run $run (tree $mine)"
+                  echo "reuse=true" >> "$GITHUB_OUTPUT"
+            - uses: actions/upload-artifact@v4
+              if: steps.find.outputs.reuse == 'true'
+              with:
+                  name: staticfs-reused
+                  path: reuse/*
+                  if-no-files-found: error
+                  retention-days: 1
+
+    package:
+        name: Build - ${{ matrix.platform.os-name }}
+        needs: reuse
+        if: ${{ !cancelled() && needs.reuse.outputs.reuse != 'true' }}
         strategy:
             fail-fast: false
             matrix:
                 platform:
-                    - os-name: Linux-x86_64
-                      runs-on: ubuntu-latest
-                      target: x86_64-unknown-linux-musl
-                    - os-name: Linux-aarch64
-                      runs-on: ubuntu-latest
-                      target: aarch64-unknown-linux-musl
-                    - os-name: Linux-riscv64
-                      runs-on: ubuntu-latest
-                      target: riscv64gc-unknown-linux-gnu
-
-                    - os-name: Windows-x86_64
-                      runs-on: windows-latest
-                      target: x86_64-pc-windows-msvc
-                    - os-name: Windows-aarch64
-                      runs-on: windows-latest
-                      target: aarch64-pc-windows-msvc
-
-                    - os-name: macOS-aarch64
-                      runs-on: macos-latest
-                      target: aarch64-apple-darwin
+                    - {os-name: Linux-x86_64, runs-on: ubuntu-24.04, target: x86_64-unknown-linux-musl, ext: ""}
+                    - {os-name: Linux-aarch64, runs-on: ubuntu-24.04, target: aarch64-unknown-linux-musl, ext: ""}
+                    - {os-name: Linux-riscv64, runs-on: ubuntu-24.04, target: riscv64gc-unknown-linux-gnu, ext: ""}
+                    - {os-name: Windows-x86_64, runs-on: windows-2025, target: x86_64-pc-windows-msvc, ext: ".exe"}
+                    - {os-name: Windows-aarch64, runs-on: windows-2025, target: aarch64-pc-windows-msvc, ext: ".exe"}
+                    - {os-name: macOS-aarch64, runs-on: macos-latest, target: aarch64-apple-darwin, ext: ""}
         runs-on: ${{ matrix.platform.runs-on }}
         steps:
-            - name: Checkout
-              uses: actions/checkout@v4
+            - uses: actions/checkout@v4
             - name: Build
               uses: houseabsolute/actions-rust-cross@v1
               with:
                   command: build
                   target: ${{ matrix.platform.target }}
                   args: "--locked --release"
-                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-            - name: Wait
+            # One file per program and platform, uploaded as it is (no archive): <program>-<platform>[.exe], and its SHA-256 next to it.
+            - name: Package
               shell: bash
-              run: sleep $((RANDOM % 20 + 3))
-            - name: Release
-              id: release1
-              uses: houseabsolute/actions-rust-release@v0
+              run: |
+                  mkdir out
+                  git rev-parse 'HEAD^{tree}' > "out/TREE-${{ matrix.platform.os-name }}"
+                  asset="staticfs-${{ matrix.platform.os-name }}${{ matrix.platform.ext }}"
+                  cp "target/${{ matrix.platform.target }}/release/staticfs${{ matrix.platform.ext }}" "out/$asset"
+                  (cd out && { sha256sum "$asset" 2>/dev/null || shasum -a 256 "$asset"; } > "$asset.sha256")
+            - uses: actions/upload-artifact@v4
               with:
-                  executable-name: staticfs
-                  target: ${{ matrix.platform.target }}
-                  extra-files: |-
-                      README.md
-                  _force-release-for-testing: true
-                  action-gh-release-parameters: |
-                      {
-                          "repository": "NaeCqde/staticfs",
-                          "token": "${{ secrets.GITHUB_TOKEN }}"
-                      }
-            - name: Wait
-              if: failure()
-              shell: bash
-              run: sleep $((RANDOM % 20 + 5))
-            - name: Release
-              if: failure()
-              id: release2
-              uses: houseabsolute/actions-rust-release@v0
+                  name: staticfs-${{ matrix.platform.os-name }}
+                  path: out/*
+                  if-no-files-found: error
+                  retention-days: 1
+
+    release:
+        name: Release
+        needs: [reuse, package]
+        if: ${{ !cancelled() && (needs.reuse.outputs.reuse == 'true' || needs.package.result == 'success') }}
+        runs-on: ubuntu-24.04
+        permissions:
+            contents: write
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/download-artifact@v4
               with:
-                  executable-name: staticfs
-                  target: ${{ matrix.platform.target }}
-                  extra-files: |-
-                      README.md
-                  _force-release-for-testing: true
-                  action-gh-release-parameters: |
-                      {
-                          "repository": "NaeCqde/staticfs",
-                          "token": "${{ secrets.GITHUB_TOKEN }}"
-                      }
+                  path: dist
+                  merge-multiple: true
+            - name: List the files
+              run: ls -l dist
+            - name: Move the latest tag
+              if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  gh api -X PATCH "repos/${{ github.repository }}/git/refs/tags/latest" -f sha="${{ github.sha }}" -F force=true \
+                    || gh api -X POST "repos/${{ github.repository }}/git/refs" -f ref="refs/tags/latest" -f sha="${{ github.sha }}"
+            # The rolling release is made again by every push (the tag was moved just above): its date is the date of the push, and only the
+            # files of this run are in it.
+            - name: Remove the old rolling release
+              if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: gh release delete latest --repo "${{ github.repository }}" --yes || true
+            # Next to the executables, once: the license, the changes and the config templates (a file name that starts with a dot cannot be a
+            # release asset, so .env is example.env).
+            - name: Add the license, the changes and the config templates
+              run: |
+                  rm -f dist/TREE-*
+                  rm -f dist/TREE-*
+                  cp "Changes.md" "dist/Changes.md"
+                  cp "README.md" "dist/README.md"
+            - name: Make the release
+              if: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) || (github.event_name == 'workflow_dispatch' && inputs.tag != '') }}
+              uses: softprops/action-gh-release@v2
+              with:
+                  tag_name: ${{ inputs.tag || (startsWith(github.ref, 'refs/tags/v') && github.ref_name) || 'latest' }}
+                  target_commitish: ${{ github.sha }}
+                  prerelease: false
+                  # the rolling `latest` is shown as the latest release; a version tag keeps GitHub's own rule (by date)
+                  make_latest: ${{ (inputs.tag || startsWith(github.ref, 'refs/tags/v')) && 'legacy' || 'true' }}
+                  files: dist/*
+                  generate_release_notes: ${{ inputs.tag != '' || startsWith(github.ref, 'refs/tags/v') }}
+                  fail_on_unmatched_files: true
