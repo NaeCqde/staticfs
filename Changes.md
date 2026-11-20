@@ -1,11 +1,11 @@
-# Changes
+# 変更履歴
 
-## Unreleased
+## 未リリース
 
-- Security
-  - A symbolic link that leads out of the served directory is no longer followed.
-  - The page of a directory is our own: a quote or `#` in a file name no longer breaks the link or adds attributes to it.
-  - The page has a Content-Security-Policy, and every response has `nosniff`.
-- A wrong command line exits with a code other than 0 (2); `--help` added; a failure to start exits with 1.
-- Code is split into modules and has unit tests.
-- The macOS x86_64 build is gone.
+- セキュリティ
+  - 配信するディレクトリの外へ向かうシンボリックリンクを、たどらなくした。
+  - ディレクトリのページを自前で生成するようにした。ファイル名に引用符や `#` があっても、リンクが壊れたり、属性を差し込まれたりしない。
+  - ページに Content-Security-Policy を付け、すべてのレスポンスに `nosniff` を付けた。
+- 間違ったコマンドラインは 0 以外(2)で終了する。`--help` を追加。起動に失敗したときは 1 で終了する。
+- コードをモジュールに分け、単体テストを付けた。
+- macOS x86_64 のビルドをやめた。

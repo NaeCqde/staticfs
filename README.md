@@ -1,5 +1,7 @@
 # Static File Server
 
+[English](README.en.md) | 日本語
+
 ```bash
 staticfs HOST PORT
 ```
